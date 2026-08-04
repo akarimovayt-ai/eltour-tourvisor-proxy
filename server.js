@@ -2,22 +2,18 @@ const express = require('express');
 const app = express();
 app.use(express.json());
 
-const TOKEN = process.env.TOURVISOR_TOKEN;
-const BASE = 'https://api.tourvisor.ru';
+const LOGIN = process.env.TOURVISOR_LOGIN;
+const PASS = process.env.TOURVISOR_PASS;
+const BASE = 'https://tourvisor.ru/xml';
 
-const headers = () => ({
-  'Authorization': `Bearer ${TOKEN}`,
-  'Content-Type': 'application/json',
-  'Accept': 'application/json'
-});
-
-async function waitForSearch(searchId, maxWait = 25000) {
+async function waitForSearch(requestId, maxWait = 30000) {
   const start = Date.now();
   while (Date.now() - start < maxWait) {
-    const r = await fetch(`${BASE}/tours/search/${searchId}/status`, { headers: headers() });
+    const url = BASE + '/result.php?format=json&authlogin=' + LOGIN + '&authpass=' + PASS + '&requestid=' + requestId + '&type=status';
+    const r = await fetch(url);
     const data = await r.json();
-    const progress = data?.data?.progress ?? data?.progress ?? 0;
-    if (progress >= 100) return true;
+    const pct = data && data.data && data.data.percentage !== undefined ? data.data.percentage : (data && data.percentage !== undefined ? data.percentage : 0);
+    if (pct >= 100) return true;
     await new Promise(res => setTimeout(res, 2000));
   }
   return false;
@@ -27,39 +23,57 @@ app.post('/search', async (req, res) => {
   try {
     const { country, departure, dateFrom, dateTo, nightsFrom, nightsTo, adults, children, budget } = req.body;
     if (!country || !departure || !dateFrom) {
-      return res.status(400).json({ error: 'country, departure, dateFrom required' });
+      return res.status(400).json({ error: 'Нужны: country, departure, dateFrom' });
     }
-    const searchBody = {
-      countryId: country, departureId: departure,
-      dateFrom, dateTo: dateTo || dateFrom,
-      nightsFrom: nightsFrom || 7, nightsTo: nightsTo || 10,
-      adults: adults || 2, childs: children || [], currency: 'KZT'
-    };
-    const startRes = await fetch(`${BASE}/tours/search`, {
-      method: 'POST', headers: headers(), body: JSON.stringify(searchBody)
+    const params = new URLSearchParams({
+      format: 'json', authlogin: LOGIN, authpass: PASS,
+      country, departure, datefrom: dateFrom, dateto: dateTo || dateFrom,
+      nights: nightsFrom || 7, nightsto: nightsTo || 10, adults: adults || 2, currency: 'kzt'
     });
+    if (children && children.length > 0) {
+      params.set('child', children.length);
+      children.forEach(function(age, i) { params.set('childage' + (i + 1), age); });
+    }
+    const startRes = await fetch(BASE + '/search.php?' + params);
     const startData = await startRes.json();
-    const searchId = startData?.data?.searchId || startData?.searchId;
-    if (!searchId) return res.status(500).json({ error: 'Search failed', detail: startData });
-    await waitForSearch(searchId);
-    const resultRes = await fetch(`${BASE}/tours/search/${searchId}`, { headers: headers() });
+    const requestId = (startData.data && startData.data.requestid) || startData.requestid;
+    if (!requestId) return res.status(500).json({ error: 'Не удалось запустить поиск', detail: startData });
+    await waitForSearch(requestId);
+    const resultUrl = BASE + '/result.php?format=json&authlogin=' + LOGIN + '&authpass=' + PASS + '&requestid=' + requestId + '&type=result&onpage=20';
+    const resultRes = await fetch(resultUrl);
     const resultData = await resultRes.json();
-    const tours = resultData?.data?.tours || resultData?.tours || [];
-    let filtered = budget ? tours.filter(t => (t.price || t.cost || 0) <= budget) : tours;
-    const top5 = filtered.sort((a,b) => (a.price||a.cost||0)-(b.price||b.cost||0)).slice(0,5).map(t => ({
-      hotel: t.hotelName||t.hotel||'Unknown', stars: t.hotelStars||t.stars||'',
-      resort: t.resortName||t.resort||'', dateFrom: t.flyDateFrom||t.dateFrom||'',
-      nights: t.nights||'', meal: t.mealName||t.meal||'',
-      price: t.price||t.cost||0, currency:'KZT',
-      operator: t.operatorName||t.operator||'', roomType: t.roomName||t.room||''
-    }));
-    res.json({ searchId, found: top5.length, tours: top5 });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+    const hotels = (resultData.data && resultData.data.result && resultData.data.result.hotel) || [];
+    let tours = [];
+    for (const hotel of hotels) {
+      const variants = hotel.tourvariant || [];
+      const toursArr = Array.isArray(variants) ? variants : [variants];
+      for (const t of toursArr) {
+        tours.push({
+          hotel: hotel.hotelname || hotel.name || 'Неизвестно',
+          stars: hotel.hotelstars || '',
+          resort: hotel.regionname || '',
+          dateFrom: t.flydate || t.checkin || '',
+          nights: t.nights || '',
+          meal: t.mealname || t.meal || '',
+          price: parseFloat(t.price || t.cost || 0),
+          currency: 'KZT',
+          operator: t.touroperatorname || t.operatorname || '',
+          roomType: t.roomname || t.room || ''
+        });
+      }
+    }
+    if (budget) tours = tours.filter(function(t) { return t.price <= budget; });
+    const top5 = tours.sort(function(a, b) { return a.price - b.price; }).slice(0, 5);
+    res.json({ requestId, found: top5.length, tours: top5 });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.get('/departures', async (req, res) => {
   try {
-    const r = await fetch(`${BASE}/departures`, { headers: headers() });
+    const url = BASE + '/listdev.php?format=json&authlogin=' + LOGIN + '&authpass=' + PASS + '&type=departure';
+    const r = await fetch(url);
     res.json(await r.json());
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -67,13 +81,14 @@ app.get('/departures', async (req, res) => {
 app.get('/countries', async (req, res) => {
   try {
     const dep = req.query.departureId || '';
-    const url = dep ? `${BASE}/countries?departureId=${dep}` : `${BASE}/countries`;
-    const r = await fetch(url, { headers: headers() });
+    const params = new URLSearchParams({ format: 'json', authlogin: LOGIN, authpass: PASS, type: 'allcountry' });
+    if (dep) params.set('departure', dep);
+    const r = await fetch(BASE + '/listdev.php?' + params);
     res.json(await r.json());
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.get('/', (req, res) => res.json({ status: 'ok', service: 'Eltour Tourvisor Proxy' }));
+app.get('/', function(req, res) { res.json({ status: 'ok', service: 'Eltour Tourvisor Proxy v2' }); });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Proxy on port ${PORT}`));
+app.listen(PORT, function() { console.log('Proxy запущен на порту ' + PORT); });
