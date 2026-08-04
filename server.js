@@ -162,6 +162,36 @@ app.get('/debug-status', async function(req, res) {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// Найти правильный код города вылета
+app.get('/find-departure', async function(req, res) {
+    try {
+          var name = (req.query.name || '').toLowerCase();
+          var url = BASE + '/listdev.php?format=json&authlogin=' + LOGIN + '&authpass=' + PASS + '&type=departure';
+          var data = await fetchTourvisorJSON(url);
+          var deps = (data && data.data && data.data.departures && data.data.departures.departure)
+            || (data && data.departures && data.departures.departure) || [];
+          if (!Array.isArray(deps)) deps = [deps];
+          if (name) deps = deps.filter(function(d) { return d.name && d.name.toLowerCase().indexOf(name) >= 0; });
+          res.json(deps.slice(0, 30));
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Найти правильный код страны
+app.get('/find-country', async function(req, res) {
+    try {
+          var name = (req.query.name || '').toLowerCase();
+          var dep = req.query.departureId || '';
+          var params = new URLSearchParams({ format: 'json', authlogin: LOGIN, authpass: PASS, type: 'allcountry' });
+          if (dep) params.set('departure', dep);
+          var data = await fetchTourvisorJSON(BASE + '/listdev.php?' + params);
+          var countries = (data && data.data && data.data.countries && data.data.countries.country)
+            || (data && data.countries && data.countries.country) || [];
+          if (!Array.isArray(countries)) countries = [countries];
+          if (name) countries = countries.filter(function(c) { return c.name && c.name.toLowerCase().indexOf(name) >= 0; });
+          res.json(countries.slice(0, 30));
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // Healthcheck
 app.get('/', function(req, res) { res.json({ status: 'ok', service: 'Eltour Tourvisor Proxy v5' }); });
 
