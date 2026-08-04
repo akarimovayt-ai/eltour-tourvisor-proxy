@@ -21,7 +21,7 @@ async function fetchTourvisorJSON(url) {
 
 // Polling статуса поиска
 async function waitForSearch(requestId, maxWait) {
-  maxWait = maxWait || 45000;
+  maxWait = maxWait || 50000;
   const start = Date.now();
   while (Date.now() - start < maxWait) {
     var url = BASE + '/result.php?format=json&authlogin=' + LOGIN + '&authpass=' + PASS + '&requestid=' + requestId + '&type=status';
@@ -68,8 +68,9 @@ app.post('/search', async function(req, res) {
     }
 
     var startData = await fetchTourvisorJSON(BASE + '/search.php?' + params);
-    var requestId = (startData.data && startData.data.requestid)
-      || (startData.result && startData.result.requestid)
+    // FIX: requestid живёт в result.requestid
+    var requestId = (startData.result && startData.result.requestid)
+      || (startData.data && startData.data.requestid)
       || startData.requestid;
 
     if (!requestId) {
@@ -90,21 +91,24 @@ app.post('/search', async function(req, res) {
     var tours = [];
     for (var i = 0; i < hotels.length; i++) {
       var hotel = hotels[i];
-      var variants = hotel.tourvariant || [];
-      var toursArr = Array.isArray(variants) ? variants : [variants];
+      // FIX: туры в hotel.tours.tour[], а не hotel.tourvariant[]
+      var toursData = hotel.tours || {};
+      var toursArr = toursData.tour || [];
+      if (!Array.isArray(toursArr)) toursArr = [toursArr];
+
       for (var j = 0; j < toursArr.length; j++) {
         var t = toursArr[j];
         tours.push({
           hotel: hotel.hotelname || hotel.name || 'Неизвестно',
           stars: hotel.hotelstars || '',
-          resort: hotel.regionname || '',
-          dateFrom: t.flydate || t.checkin || '',
+          resort: hotel.regionname || hotel.subregionname || '',
+          dateFrom: t.flydate || '',
           nights: t.nights || '',
-          meal: t.mealname || t.meal || '',
-          price: parseFloat(t.price || t.cost || 0),
-          currency: 'KZT',
-          operator: t.touroperatorname || t.operatorname || '',
-          roomType: t.roomname || t.room || ''
+          meal: t.mealrussian || t.meal || '',
+          price: parseFloat(t.price || 0),
+          currency: t.currency || 'RUB',
+          operator: t.operatorname || '',
+          roomType: t.room || t.placement || ''
         });
       }
     }
@@ -118,36 +122,6 @@ app.post('/search', async function(req, res) {
   }
 });
 
-// Найти правильный код города вылета
-app.get('/find-departure', async function(req, res) {
-  try {
-    var name = (req.query.name || '').toLowerCase();
-    var url = BASE + '/listdev.php?format=json&authlogin=' + LOGIN + '&authpass=' + PASS + '&type=departure';
-    var data = await fetchTourvisorJSON(url);
-    var deps = (data && data.data && data.data.departures && data.data.departures.departure)
-      || (data && data.departures && data.departures.departure) || [];
-    if (!Array.isArray(deps)) deps = [deps];
-    if (name) deps = deps.filter(function(d) { return d.name && d.name.toLowerCase().indexOf(name) >= 0; });
-    res.json(deps.slice(0, 30));
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-// Найти правильный код страны
-app.get('/find-country', async function(req, res) {
-  try {
-    var name = (req.query.name || '').toLowerCase();
-    var dep = req.query.departureId || '';
-    var params = new URLSearchParams({ format: 'json', authlogin: LOGIN, authpass: PASS, type: 'allcountry' });
-    if (dep) params.set('departure', dep);
-    var data = await fetchTourvisorJSON(BASE + '/listdev.php?' + params);
-    var countries = (data && data.data && data.data.countries && data.data.countries.country)
-      || (data && data.countries && data.countries.country) || [];
-    if (!Array.isArray(countries)) countries = [countries];
-    if (name) countries = countries.filter(function(c) { return c.name && c.name.toLowerCase().indexOf(name) >= 0; });
-    res.json(countries.slice(0, 30));
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
 // Debug: сырой ответ по requestId
 app.get('/debug-result', async function(req, res) {
   try {
@@ -159,13 +133,14 @@ app.get('/debug-result', async function(req, res) {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Debug: сырой запуск поиска
+// Debug: запуск поиска
+// country=4 (Турция), departure=8 (уточнить код Астаны)
 app.post('/debug-search', async function(req, res) {
   try {
     var body = req.body;
     var params = new URLSearchParams({
       format: 'json', authlogin: LOGIN, authpass: PASS,
-      country: body.country || 45, departure: body.departure || 3,
+      country: body.country || 4, departure: body.departure || 8,
       datefrom: body.dateFrom || '01.09.2026', dateto: body.dateTo || '10.09.2026',
       nights: body.nightsFrom || 7, nightsto: body.nightsTo || 10,
       adults: body.adults || 2, currency: 'kzt'
@@ -175,8 +150,19 @@ app.post('/debug-search', async function(req, res) {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// Debug: статус поиска
+app.get('/debug-status', async function(req, res) {
+  try {
+    var rid = req.query.requestId;
+    if (!rid) return res.status(400).json({ error: 'Нужен ?requestId=...' });
+    var url = BASE + '/result.php?format=json&authlogin=' + LOGIN + '&authpass=' + PASS + '&requestid=' + rid + '&type=status';
+    var data = await fetchTourvisorJSON(url);
+    res.json(data);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // Healthcheck
-app.get('/', function(req, res) { res.json({ status: 'ok', service: 'Eltour Tourvisor Proxy v4' }); });
+app.get('/', function(req, res) { res.json({ status: 'ok', service: 'Eltour Tourvisor Proxy v5' }); });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, function() { console.log('Proxy запущен на порту ' + PORT); });
