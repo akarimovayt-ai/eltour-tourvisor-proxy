@@ -6,20 +6,23 @@ const LOGIN = process.env.TOURVISOR_LOGIN;
 const PASS = process.env.TOURVISOR_PASS;
 const BASE = 'https://tourvisor.ru/xml';
 
-async function waitForSearch(requestId, maxWait = 30000) {
+async function waitForSearch(requestId, maxWait) {
+  maxWait = maxWait || 40000;
   const start = Date.now();
   while (Date.now() - start < maxWait) {
     const url = BASE + '/result.php?format=json&authlogin=' + LOGIN + '&authpass=' + PASS + '&requestid=' + requestId + '&type=status';
     const r = await fetch(url);
     const data = await r.json();
-    const pct = data && data.data && data.data.percentage !== undefined ? data.data.percentage : (data && data.percentage !== undefined ? data.percentage : 0);
+    const pct = (data && data.data && data.data.percentage != null) ? data.data.percentage
+      : (data && data.result && data.result.percentage != null) ? data.result.percentage
+      : (data && data.percentage != null) ? data.percentage : 0;
     if (pct >= 100) return true;
-    await new Promise(res => setTimeout(res, 2000));
+    await new Promise(function(res) { setTimeout(res, 2000); });
   }
   return false;
 }
 
-app.post('/search', async (req, res) => {
+app.post('/search', async function(req, res) {
   try {
     const { country, departure, dateFrom, dateTo, nightsFrom, nightsTo, adults, children, budget } = req.body;
     if (!country || !departure || !dateFrom) {
@@ -27,8 +30,10 @@ app.post('/search', async (req, res) => {
     }
     const params = new URLSearchParams({
       format: 'json', authlogin: LOGIN, authpass: PASS,
-      country, departure, datefrom: dateFrom, dateto: dateTo || dateFrom,
-      nights: nightsFrom || 7, nightsto: nightsTo || 10, adults: adults || 2, currency: 'kzt'
+      country: country, departure: departure,
+      datefrom: dateFrom, dateto: dateTo || dateFrom,
+      nights: nightsFrom || 7, nightsto: nightsTo || 10,
+      adults: adults || 2, currency: 'kzt'
     });
     if (children && children.length > 0) {
       params.set('child', children.length);
@@ -36,13 +41,16 @@ app.post('/search', async (req, res) => {
     }
     const startRes = await fetch(BASE + '/search.php?' + params);
     const startData = await startRes.json();
-    const requestId = (startData.data && startData.data.requestid) || startData.requestid;
+    const requestId = (startData.data && startData.data.requestid)
+      || (startData.result && startData.result.requestid)
+      || startData.requestid;
     if (!requestId) return res.status(500).json({ error: 'Не удалось запустить поиск', detail: startData });
     await waitForSearch(requestId);
     const resultUrl = BASE + '/result.php?format=json&authlogin=' + LOGIN + '&authpass=' + PASS + '&requestid=' + requestId + '&type=result&onpage=20';
     const resultRes = await fetch(resultUrl);
     const resultData = await resultRes.json();
-    const hotels = (resultData.data && resultData.data.result && resultData.data.result.hotel) || [];
+    const rd = (resultData.data && resultData.data.result) || resultData.result || {};
+    const hotels = rd.hotel || [];
     let tours = [];
     for (const hotel of hotels) {
       const variants = hotel.tourvariant || [];
@@ -64,13 +72,13 @@ app.post('/search', async (req, res) => {
     }
     if (budget) tours = tours.filter(function(t) { return t.price <= budget; });
     const top5 = tours.sort(function(a, b) { return a.price - b.price; }).slice(0, 5);
-    res.json({ requestId, found: top5.length, tours: top5 });
+    res.json({ requestId: requestId, found: top5.length, tours: top5 });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-app.get('/departures', async (req, res) => {
+app.get('/departures', async function(req, res) {
   try {
     const url = BASE + '/listdev.php?format=json&authlogin=' + LOGIN + '&authpass=' + PASS + '&type=departure';
     const r = await fetch(url);
@@ -78,7 +86,7 @@ app.get('/departures', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.get('/countries', async (req, res) => {
+app.get('/countries', async function(req, res) {
   try {
     const dep = req.query.departureId || '';
     const params = new URLSearchParams({ format: 'json', authlogin: LOGIN, authpass: PASS, type: 'allcountry' });
