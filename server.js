@@ -1,4 +1,4 @@
-// Eltour Tourvisor Proxy v6 - add /departures and /countries endpoints 
+// Eltour Tourvisor Proxy v7 - KZT currency conversion
 const express = require('express');
 const app = express();
 app.use(express.json());
@@ -6,8 +6,8 @@ app.use(express.json());
 const LOGIN = process.env.TOURVISOR_LOGIN;
 const PASS = process.env.TOURVISOR_PASS;
 const BASE = 'https://tourvisor.ru/xml';
+const RUB_TO_KZT = 5.5; // Курс RUB/KZT, обновлять при необходимости
 
-// Читаем ответ Tourvisor (может быть windows-1251)
 async function fetchTourvisorJSON(url) {
   var r = await fetch(url);
   var buf = await r.arrayBuffer();
@@ -20,7 +20,6 @@ async function fetchTourvisorJSON(url) {
   }
 }
 
-// Polling статуса поиска
 async function waitForSearch(requestId, maxWait) {
   maxWait = maxWait || 50000;
   const start = Date.now();
@@ -28,7 +27,6 @@ async function waitForSearch(requestId, maxWait) {
     var url = BASE + '/result.php?format=json&authlogin=' + LOGIN + '&authpass=' + PASS + '&requestid=' + requestId + '&type=status';
     var data = await fetchTourvisorJSON(url);
     var pct = (data && data.data && data.data.percentage != null) ? data.data.percentage
-      : (data && data.data && data.data.status && data.data.status.progress != null) ? data.data.status.progress
       : (data && data.result && data.result.percentage != null) ? data.result.percentage
       : (data && data.percentage != null) ? data.percentage : 0;
     if (pct >= 100) return true;
@@ -37,7 +35,12 @@ async function waitForSearch(requestId, maxWait) {
   return false;
 }
 
-// Основной поиск туров
+function toKZT(price, currency) {
+  var p = parseFloat(price || 0);
+  if (currency === 'RUB') return Math.round(p * RUB_TO_KZT);
+  return Math.round(p);
+}
+
 app.post('/search', async function(req, res) {
   try {
     var body = req.body;
@@ -60,7 +63,7 @@ app.post('/search', async function(req, res) {
       country: country, departure: departure,
       datefrom: dateFrom, dateto: dateTo || dateFrom,
       nights: nightsFrom || 7, nightsto: nightsTo || 10,
-      adults: adults || 2, currency: 'kzt'
+      adults: adults || 2
     });
 
     if (children && children.length > 0) {
@@ -82,9 +85,7 @@ app.post('/search', async function(req, res) {
     var resultUrl = BASE + '/result.php?format=json&authlogin=' + LOGIN + '&authpass=' + PASS + '&requestid=' + requestId + '&type=result&onpage=20';
     var resultData = await fetchTourvisorJSON(resultUrl);
 
-    var rd = (resultData.data && resultData.data.result)
-      || resultData.result
-      || {};
+    var rd = (resultData.data && resultData.data.result) || resultData.result || {};
     var hotels = rd.hotel || [];
     if (!Array.isArray(hotels)) hotels = [hotels];
 
@@ -94,9 +95,9 @@ app.post('/search', async function(req, res) {
       var toursData = hotel.tours || {};
       var toursArr = toursData.tour || [];
       if (!Array.isArray(toursArr)) toursArr = [toursArr];
-
       for (var j = 0; j < toursArr.length; j++) {
         var t = toursArr[j];
+        var origCurrency = t.currency || 'RUB';
         tours.push({
           hotel: hotel.hotelname || hotel.name || 'Неизвестно',
           stars: hotel.hotelstars || '',
@@ -104,8 +105,8 @@ app.post('/search', async function(req, res) {
           dateFrom: t.flydate || '',
           nights: t.nights || '',
           meal: t.mealrussian || t.meal || '',
-          price: parseFloat(t.price || 0),
-          currency: t.currency || 'RUB',
+          price: toKZT(t.price, origCurrency),
+          currency: 'KZT',
           operator: t.operatorname || '',
           roomType: t.room || t.placement || ''
         });
@@ -114,15 +115,12 @@ app.post('/search', async function(req, res) {
 
     if (budget) tours = tours.filter(function(t) { return t.price <= budget; });
     var top5 = tours.sort(function(a, b) { return a.price - b.price; }).slice(0, 5);
-
     res.json({ requestId: requestId, found: top5.length, tours: top5 });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Список городов вылета (getDepartures)
-// КОДЫ: departure=59 (Астана NQZ), departure=60 (Алматы ALA)
 app.get('/departures', async function(req, res) {
   try {
     var url = BASE + '/listdev.php?format=json&authlogin=' + LOGIN + '&authpass=' + PASS + '&type=departure';
@@ -134,8 +132,6 @@ app.get('/departures', async function(req, res) {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Список стран (getCountries)
-// КОДЫ: country=4 (Турция), country=1 (Египет), country=19 (Таиланд), country=21 (ОАЭ)
 app.get('/countries', async function(req, res) {
   try {
     var dep = req.query.departureId || 59;
@@ -149,7 +145,6 @@ app.get('/countries', async function(req, res) {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Debug: сырой ответ по requestId
 app.get('/debug-result', async function(req, res) {
   try {
     var rid = req.query.requestId;
@@ -160,7 +155,6 @@ app.get('/debug-result', async function(req, res) {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Debug: запуск поиска
 app.post('/debug-search', async function(req, res) {
   try {
     var body = req.body;
@@ -169,14 +163,13 @@ app.post('/debug-search', async function(req, res) {
       country: body.country || 4, departure: body.departure || 59,
       datefrom: body.dateFrom || '01.09.2026', dateto: body.dateTo || '10.09.2026',
       nights: body.nightsFrom || 7, nightsto: body.nightsTo || 10,
-      adults: body.adults || 2, currency: 'kzt'
+      adults: body.adults || 2
     });
     var data = await fetchTourvisorJSON(BASE + '/search.php?' + params);
     res.json(data);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Debug: статус поиска
 app.get('/debug-status', async function(req, res) {
   try {
     var rid = req.query.requestId;
@@ -187,7 +180,6 @@ app.get('/debug-status', async function(req, res) {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Найти город вылета по названию
 app.get('/find-departure', async function(req, res) {
   try {
     var name = (req.query.name || '').toLowerCase();
@@ -201,7 +193,6 @@ app.get('/find-departure', async function(req, res) {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Найти страну по названию
 app.get('/find-country', async function(req, res) {
   try {
     var name = (req.query.name || '').toLowerCase();
@@ -217,9 +208,7 @@ app.get('/find-country', async function(req, res) {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Healthcheck
-app.get('/', function(req, res) { res.json({ status: 'ok', service: 'Eltour Tourvisor Proxy v6' }); });
+app.get('/', function(req, res) { res.json({ status: 'ok', service: 'Eltour Tourvisor Proxy v7 - KZT' }); });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, function() { console.log('Proxy запущен на порту ' + PORT); });
-
+app.listen(PORT, function() { console.log('Proxy v7 KZT запущен на порту ' + PORT); });
