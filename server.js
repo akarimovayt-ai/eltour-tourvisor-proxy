@@ -1,4 +1,4 @@
-// Eltour Tourvisor Proxy v6 - add /departures and /countries endpoints
+// Eltour Tourvisor Proxy v6 - add /departures and /countries endpoints 
 const express = require('express');
 const app = express();
 app.use(express.json());
