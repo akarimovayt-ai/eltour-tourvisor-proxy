@@ -222,3 +222,4 @@ app.get('/', function(req, res) { res.json({ status: 'ok', service: 'Eltour Tour
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, function() { console.log('Proxy запущен на порту ' + PORT); });
+
