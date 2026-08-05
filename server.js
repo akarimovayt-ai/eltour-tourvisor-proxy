@@ -6,9 +6,8 @@ app.use(express.json());
 const LOGIN = process.env.TOURVISOR_LOGIN;
 const PASS = process.env.TOURVISOR_PASS;
 const BASE = 'https://tourvisor.ru/xml';
-
 // Читаем ответ Tourvisor (может быть windows-1251)
-async function fetchTourvisorJSON(url) {
+async function fetchTourvisorJSON(url) 
   var r = await fetch(url);
   var buf = await r.arrayBuffer();
   try {
@@ -135,13 +134,13 @@ app.get('/debug-result', async function(req, res) {
 });
 
 // Debug: запуск поиска
-// country=4 (Турция), departure=8 (уточнить код Астаны)
+  // КОДЫ: country=4 (Турция), departure=59 (Астана NQZ), departure=60 (Алматы ALA)
 app.post('/debug-search', async function(req, res) {
   try {
     var body = req.body;
     var params = new URLSearchParams({
       format: 'json', authlogin: LOGIN, authpass: PASS,
-      country: body.country || 4, departure: body.departure || 8,
+      country: body.country || 4, departure: body.departure || 59,
       datefrom: body.dateFrom || '01.09.2026', dateto: body.dateTo || '10.09.2026',
       nights: body.nightsFrom || 7, nightsto: body.nightsTo || 10,
       adults: body.adults || 2, currency: 'kzt'
