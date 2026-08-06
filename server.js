@@ -42,6 +42,20 @@ var STATIC_DEPARTURES = [
     { id: '59', name: 'Астана' }
 ];
 
+// Статические регионы Турции (fallback)
+var STATIC_REGIONS_TURKEY = [
+    { id: '1009', name: 'Кемер' },
+    { id: '1010', name: 'Анталья' },
+    { id: '1011', name: 'Белек' },
+    { id: '1014', name: 'Сиде' },
+    { id: '1015', name: 'Аланья' },
+    { id: '1016', name: 'Мармарис' },
+    { id: '1017', name: 'Бодрум' },
+    { id: '1018', name: 'Фетхие' },
+    { id: '1020', name: 'Стамбул' },
+    { id: '1021', name: 'Кушадасы' }
+];
+
 async function fetchTourvisorJSON(url) {
     var r = await fetch(url);
     var buf = await r.arrayBuffer();
@@ -88,14 +102,17 @@ function toKZT(price, currency) {
     return Math.round(p);
 }
 
+// Конвертация даты из YYYY-MM-DD в DD.MM.YYYY (формат Tourvisor)
 function toTourvisorDate(dateStr) {
-        if (!dateStr) return '';
-        if (/^\d{2}\.\d{2}\.\d{4}$/.test(dateStr)) return dateStr;
-        if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
-                    var p = dateStr.split('-');
-                    return p[2] + '.' + p[1] + '.' + p[0];
-        }
-        return dateStr;
+    if (!dateStr) return '';
+    // Уже в формате DD.MM.YYYY — вернуть как есть
+    if (/^\d{2}\.\d{2}\.\d{4}$/.test(dateStr)) return dateStr;
+    // Конвертировать из YYYY-MM-DD
+    if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+        var p = dateStr.split('-');
+        return p[2] + '.' + p[1] + '.' + p[0];
+    }
+    return dateStr;
 }
 
 app.post('/search', async function(req, res) {
@@ -110,6 +127,8 @@ app.post('/search', async function(req, res) {
           var adults = body.adults;
           var children = body.children;
           var budget = body.budget;
+          var resort = body.resort; // текстовый фильтр по курорту (клиентский, fallback)
+          var regions = body.regions; // ID регионов Tourvisor через запятую (точный фильтр на стороне Tourvisor)
 
           if (!country || !departure || !dateFrom) {
                   return res.status(400).json({ error: 'Нужны: country, departure, dateFrom' });
@@ -127,6 +146,8 @@ app.post('/search', async function(req, res) {
                   params.set('child', children.length);
                   children.forEach(function(age, i) { params.set('childage' + (i + 1), age); });
           }
+          // Передаём регионы прямо в Tourvisor (фильтрует на их стороне — самый точный вариант)
+          if (regions) params.set('regions', regions);
 
           var startData = await fetchTourvisorJSON(BASE + '/search.php?' + params);
           var requestId = (startData.result && startData.result.requestid)
@@ -139,7 +160,7 @@ app.post('/search', async function(req, res) {
 
           await waitForSearch(requestId);
 
-          var resultUrl = BASE + '/result.php?format=json&authlogin=' + LOGIN + '&authpass=' + PASS + '&requestid=' + requestId + '&type=result&onpage=20';
+          var resultUrl = BASE + '/result.php?format=json&authlogin=' + LOGIN + '&authpass=' + PASS + '&requestid=' + requestId + '&type=result&onpage=50';
           var resultData = await fetchTourvisorJSON(resultUrl);
 
           var rd = (resultData.data && resultData.data.result) || resultData.result || {};
@@ -171,6 +192,17 @@ app.post('/search', async function(req, res) {
           }
 
           if (budget) tours = tours.filter(function(t) { return t.price <= budget; });
+          // Фильтр по курорту — если передан, ищем по частичному совпадению (без учёта регистра)
+          if (resort) {
+                  var resortLower = resort.toLowerCase();
+                  var filtered = tours.filter(function(t) { return t.resort && t.resort.toLowerCase().indexOf(resortLower) >= 0; });
+                  // Если после фильтра пусто — вернём без фильтра, но с пометкой
+                  if (filtered.length > 0) {
+                          tours = filtered;
+                  } else {
+                          return res.json({ requestId: requestId, found: 0, tours: [], warning: 'По курорту "' + resort + '" ничего не найдено. Попробуйте уточнить: Кемер, Анталья, Белек, Сиде, Аланья.' });
+                  }
+          }
           var top5 = tours.sort(function(a, b) { return a.price - b.price; }).slice(0, 5);
           res.json({ requestId: requestId, found: top5.length, tours: top5 });
     } catch (err) {
@@ -303,7 +335,28 @@ app.get('/debug-raw', async function(req, res) {
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.get('/', function(req, res) { res.json({ status: 'ok', service: 'Eltour Tourvisor Proxy v9 - KZT + static fallback' }); });
+// Регионы по стране: /regions?countryId=4
+app.get('/regions', async function(req, res) {
+    try {
+          var countryId = req.query.countryId || req.query.country;
+          if (!countryId) return res.status(400).json({ error: 'Нужен ?countryId=...' });
+          var params = new URLSearchParams({ format: 'json', authlogin: LOGIN, authpass: PASS, type: 'region', country: countryId });
+          var data = await fetchTourvisorJSON(BASE + '/listdev.php?' + params);
+          var regions = (data && data.data && data.data.regions && data.data.regions.region)
+                  || (data && data.regions && data.regions.region) || [];
+          if (!Array.isArray(regions)) regions = [regions];
+          if (regions.length === 0 && String(countryId) === '4') {
+                  console.log('/regions: API returned empty for Turkey, using static fallback');
+                  return res.json({ regions: STATIC_REGIONS_TURKEY, static: true });
+          }
+          res.json({ regions: regions });
+    } catch (err) {
+          if (String(req.query.countryId) === '4') return res.json({ regions: STATIC_REGIONS_TURKEY, static: true });
+          res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/', function(req, res) { res.json({ status: 'ok', service: 'Eltour Tourvisor Proxy v9 - KZT + static fallback + regions' }); });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, function() { console.log('Proxy v9 KZT запущен на порту ' + PORT); });
