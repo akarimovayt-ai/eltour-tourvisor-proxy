@@ -10,7 +10,7 @@ const RUB_TO_KZT = 5.5; // Курс RUB/KZT, обновлять при необ�
 
 // Статический список стран (Tourvisor IDs) — используется если API возвращает пустой ответ
 var STATIC_COUNTRIES = [
-    { id: '3',   name: 'Египет' },
+    { id: '3',   name: 'Египет' }
     { id: '4',   name: 'Турция' },
     { id: '2',   name: 'Болгария' },
     { id: '5',   name: 'Доминикана' },
@@ -88,6 +88,16 @@ function toKZT(price, currency) {
     return Math.round(p);
 }
 
+function toTourvisorDate(dateStr) {
+        if (!dateStr) return '';
+        if (/^\d{2}\.\d{2}\.\d{4}$/.test(dateStr)) return dateStr;
+        if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+                    var p = dateStr.split('-');
+                    return p[2] + '.' + p[1] + '.' + p[0];
+        }
+        return dateStr;
+}
+
 app.post('/search', async function(req, res) {
     try {
           var body = req.body;
@@ -108,7 +118,7 @@ app.post('/search', async function(req, res) {
           var params = new URLSearchParams({
                   format: 'json', authlogin: LOGIN, authpass: PASS,
                   country: country, departure: departure,
-                  datefrom: dateFrom, dateto: dateTo || dateFrom,
+                  datefrom: toTourvisorDate(dateFrom), dateto: toTourvisorDate(dateTo || dateFrom),
                   nightsfrom: nightsFrom || 7, nightsto: nightsTo || 10,
                   adults: adults || 2
           });
