@@ -1,4 +1,4 @@
-// Eltour Tourvisor Proxy v8 - fix waitForSearch progress parsing
+// Eltour Tourvisor Proxy v9 - static fallback for countries/departures
 const express = require('express');
 const app = express();
 app.use(express.json());
@@ -7,6 +7,40 @@ const LOGIN = process.env.TOURVISOR_LOGIN;
 const PASS = process.env.TOURVISOR_PASS;
 const BASE = 'https://tourvisor.ru/xml';
 const RUB_TO_KZT = 5.5; // Курс RUB/KZT, обновлять при необходимости
+
+// Статический список стран (Tourvisor IDs) — используется если API возвращает пустой ответ
+var STATIC_COUNTRIES = [
+    { id: '3',   name: 'Египет' },
+    { id: '4',   name: 'Турция' },
+    { id: '2',   name: 'Болгария' },
+    { id: '5',   name: 'Доминикана' },
+    { id: '8',   name: 'Португалия' },
+    { id: '12',  name: 'Испания' },
+    { id: '15',  name: 'Греция' },
+    { id: '17',  name: 'Кипр' },
+    { id: '18',  name: 'Тунис' },
+    { id: '29',  name: 'Израиль' },
+    { id: '30',  name: 'Италия' },
+    { id: '31',  name: 'ОАЭ' },
+    { id: '37',  name: 'Черногория' },
+    { id: '43',  name: 'Хорватия' },
+    { id: '47',  name: 'Иордания' },
+    { id: '50',  name: 'Китай' },
+    { id: '52',  name: 'Куба' },
+    { id: '63',  name: 'Мексика' },
+    { id: '85',  name: 'Марокко' },
+    { id: '95',  name: 'Мальдивы' },
+    { id: '105', name: 'Вьетнам' },
+    { id: '119', name: 'Индонезия (Бали)' },
+    { id: '120', name: 'Таиланд' },
+    { id: '122', name: 'Шри-Ланка' }
+];
+
+// Статический список городов вылета — используется если API возвращает пустой ответ
+var STATIC_DEPARTURES = [
+    { id: '58', name: 'Алматы' },
+    { id: '59', name: 'Астана' }
+];
 
 async function fetchTourvisorJSON(url) {
     var r = await fetch(url);
@@ -23,7 +57,6 @@ async function fetchTourvisorJSON(url) {
                 if (!text2 || !text2.trim()) throw new Error('Empty response from Tourvisor');
                 return JSON.parse(text2);
           } catch(e2) {
-                // Log first 200 chars of the response for debugging
                 console.error('fetchTourvisorJSON error for', url.split('?')[0], '| response preview:', (text || '').substring(0, 200));
                 throw e2;
           }
@@ -67,11 +100,11 @@ app.post('/search', async function(req, res) {
           var adults = body.adults;
           var children = body.children;
           var budget = body.budget;
-      
+
           if (!country || !departure || !dateFrom) {
                   return res.status(400).json({ error: 'Нужны: country, departure, dateFrom' });
           }
-      
+
           var params = new URLSearchParams({
                   format: 'json', authlogin: LOGIN, authpass: PASS,
                   country: country, departure: departure,
@@ -79,30 +112,30 @@ app.post('/search', async function(req, res) {
                   nightsfrom: nightsFrom || 7, nightsto: nightsTo || 10,
                   adults: adults || 2
           });
-      
+
           if (children && children.length > 0) {
                   params.set('child', children.length);
                   children.forEach(function(age, i) { params.set('childage' + (i + 1), age); });
           }
-      
+
           var startData = await fetchTourvisorJSON(BASE + '/search.php?' + params);
           var requestId = (startData.result && startData.result.requestid)
                   || (startData.data && startData.data.requestid)
                   || startData.requestid;
-      
+
           if (!requestId) {
                   return res.status(500).json({ error: 'Не удалось запустить поиск', detail: startData });
           }
-      
+
           await waitForSearch(requestId);
-      
+
           var resultUrl = BASE + '/result.php?format=json&authlogin=' + LOGIN + '&authpass=' + PASS + '&requestid=' + requestId + '&type=result&onpage=20';
           var resultData = await fetchTourvisorJSON(resultUrl);
-      
+
           var rd = (resultData.data && resultData.data.result) || resultData.result || {};
           var hotels = rd.hotel || [];
           if (!Array.isArray(hotels)) hotels = [hotels];
-      
+
           var tours = [];
           for (var i = 0; i < hotels.length; i++) {
                   var hotel = hotels[i];
@@ -126,7 +159,7 @@ app.post('/search', async function(req, res) {
                             });
                   }
           }
-      
+
           if (budget) tours = tours.filter(function(t) { return t.price <= budget; });
           var top5 = tours.sort(function(a, b) { return a.price - b.price; }).slice(0, 5);
           res.json({ requestId: requestId, found: top5.length, tours: top5 });
@@ -142,13 +175,19 @@ app.get('/departures', async function(req, res) {
           var deps = (data && data.data && data.data.departures && data.data.departures.departure)
                   || (data && data.departures && data.departures.departure) || [];
           if (!Array.isArray(deps)) deps = [deps];
+          if (deps.length === 0) {
+                  console.log('/departures: API returned empty, using static fallback');
+                  return res.json({ departures: STATIC_DEPARTURES, static: true });
+          }
           res.json({ departures: deps });
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) {
+          console.log('/departures: API error (' + err.message + '), using static fallback');
+          res.json({ departures: STATIC_DEPARTURES, static: true });
+    }
 });
 
 app.get('/countries', async function(req, res) {
     try {
-          // Note: do NOT default departure - allcountry without departure returns all active countries
           var dep = req.query.departureId;
           var params = new URLSearchParams({ format: 'json', authlogin: LOGIN, authpass: PASS, type: 'allcountry' });
           if (dep) params.set('departure', dep);
@@ -156,10 +195,52 @@ app.get('/countries', async function(req, res) {
           var countries = (data && data.data && data.data.countries && data.data.countries.country)
                   || (data && data.countries && data.countries.country) || [];
           if (!Array.isArray(countries)) countries = [countries];
+          if (countries.length === 0) {
+                  console.log('/countries: API returned empty, using static fallback');
+                  return res.json({ countries: STATIC_COUNTRIES, static: true });
+          }
           res.json({ countries: countries });
     } catch (err) {
-          console.error('/countries error:', err.message);
-          res.status(500).json({ error: err.message });
+          console.log('/countries: API error (' + err.message + '), using static fallback');
+          res.json({ countries: STATIC_COUNTRIES, static: true });
+    }
+});
+
+app.get('/find-country', async function(req, res) {
+    try {
+          var name = (req.query.name || '').toLowerCase();
+          var dep = req.query.departureId || '';
+          var params = new URLSearchParams({ format: 'json', authlogin: LOGIN, authpass: PASS, type: 'allcountry' });
+          if (dep) params.set('departure', dep);
+          var data = await fetchTourvisorJSON(BASE + '/listdev.php?' + params);
+          var countries = (data && data.data && data.data.countries && data.data.countries.country)
+                  || (data && data.countries && data.countries.country) || [];
+          if (!Array.isArray(countries)) countries = [countries];
+          if (countries.length === 0) countries = STATIC_COUNTRIES;
+          if (name) countries = countries.filter(function(c) { return c.name && c.name.toLowerCase().indexOf(name) >= 0; });
+          res.json(countries.slice(0, 30));
+    } catch (err) {
+          var name2 = (req.query.name || '').toLowerCase();
+          var fallback = name2 ? STATIC_COUNTRIES.filter(function(c) { return c.name.toLowerCase().indexOf(name2) >= 0; }) : STATIC_COUNTRIES;
+          res.json(fallback.slice(0, 30));
+    }
+});
+
+app.get('/find-departure', async function(req, res) {
+    try {
+          var name = (req.query.name || '').toLowerCase();
+          var url = BASE + '/listdev.php?format=json&authlogin=' + LOGIN + '&authpass=' + PASS + '&type=departure';
+          var data = await fetchTourvisorJSON(url);
+          var deps = (data && data.data && data.data.departures && data.data.departures.departure)
+                  || (data && data.departures && data.departures.departure) || [];
+          if (!Array.isArray(deps)) deps = [deps];
+          if (deps.length === 0) deps = STATIC_DEPARTURES;
+          if (name) deps = deps.filter(function(d) { return d.name && d.name.toLowerCase().indexOf(name) >= 0; });
+          res.json(deps.slice(0, 30));
+    } catch (err) {
+          var name2 = (req.query.name || '').toLowerCase();
+          var fallback = name2 ? STATIC_DEPARTURES.filter(function(d) { return d.name.toLowerCase().indexOf(name2) >= 0; }) : STATIC_DEPARTURES;
+          res.json(fallback.slice(0, 30));
     }
 });
 
@@ -198,34 +279,6 @@ app.get('/debug-status', async function(req, res) {
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.get('/find-departure', async function(req, res) {
-    try {
-          var name = (req.query.name || '').toLowerCase();
-          var url = BASE + '/listdev.php?format=json&authlogin=' + LOGIN + '&authpass=' + PASS + '&type=departure';
-          var data = await fetchTourvisorJSON(url);
-          var deps = (data && data.data && data.data.departures && data.data.departures.departure)
-                  || (data && data.departures && data.departures.departure) || [];
-          if (!Array.isArray(deps)) deps = [deps];
-          if (name) deps = deps.filter(function(d) { return d.name && d.name.toLowerCase().indexOf(name) >= 0; });
-          res.json(deps.slice(0, 30));
-    } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-app.get('/find-country', async function(req, res) {
-    try {
-          var name = (req.query.name || '').toLowerCase();
-          var dep = req.query.departureId || '';
-          var params = new URLSearchParams({ format: 'json', authlogin: LOGIN, authpass: PASS, type: 'allcountry' });
-          if (dep) params.set('departure', dep);
-          var data = await fetchTourvisorJSON(BASE + '/listdev.php?' + params);
-          var countries = (data && data.data && data.data.countries && data.data.countries.country)
-                  || (data && data.countries && data.countries.country) || [];
-          if (!Array.isArray(countries)) countries = [countries];
-          if (name) countries = countries.filter(function(c) { return c.name && c.name.toLowerCase().indexOf(name) >= 0; });
-          res.json(countries.slice(0, 30));
-    } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
 // Debug: see raw Tourvisor response for any listdev endpoint
 app.get('/debug-raw', async function(req, res) {
     try {
@@ -240,7 +293,7 @@ app.get('/debug-raw', async function(req, res) {
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.get('/', function(req, res) { res.json({ status: 'ok', service: 'Eltour Tourvisor Proxy v8 - KZT' }); });
+app.get('/', function(req, res) { res.json({ status: 'ok', service: 'Eltour Tourvisor Proxy v9 - KZT + static fallback' }); });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, function() { console.log('Proxy v8 KZT запущен на порту ' + PORT); });
+app.listen(PORT, function() { console.log('Proxy v9 KZT запущен на порту ' + PORT); });
