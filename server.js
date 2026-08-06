@@ -11,12 +11,22 @@ const RUB_TO_KZT = 5.5; // Курс RUB/KZT, обновлять при необ�
 async function fetchTourvisorJSON(url) {
     var r = await fetch(url);
     var buf = await r.arrayBuffer();
+    var text = '';
     try {
-          var text = new TextDecoder('utf-8').decode(buf);
+          text = new TextDecoder('utf-8').decode(buf);
+          if (!text || !text.trim()) throw new Error('Empty response from Tourvisor');
           return JSON.parse(text);
     } catch(e) {
-          var text2 = new TextDecoder('windows-1251').decode(buf);
-          return JSON.parse(text2);
+          // If utf-8 parse failed, try windows-1251
+          try {
+                var text2 = new TextDecoder('windows-1251').decode(buf);
+                if (!text2 || !text2.trim()) throw new Error('Empty response from Tourvisor');
+                return JSON.parse(text2);
+          } catch(e2) {
+                // Log first 200 chars of the response for debugging
+                console.error('fetchTourvisorJSON error for', url.split('?')[0], '| response preview:', (text || '').substring(0, 200));
+                throw e2;
+          }
     }
 }
 
@@ -138,7 +148,8 @@ app.get('/departures', async function(req, res) {
 
 app.get('/countries', async function(req, res) {
     try {
-          var dep = req.query.departureId || 59;
+          // Note: do NOT default departure - allcountry without departure returns all active countries
+          var dep = req.query.departureId;
           var params = new URLSearchParams({ format: 'json', authlogin: LOGIN, authpass: PASS, type: 'allcountry' });
           if (dep) params.set('departure', dep);
           var data = await fetchTourvisorJSON(BASE + '/listdev.php?' + params);
@@ -146,7 +157,10 @@ app.get('/countries', async function(req, res) {
                   || (data && data.countries && data.countries.country) || [];
           if (!Array.isArray(countries)) countries = [countries];
           res.json({ countries: countries });
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) {
+          console.error('/countries error:', err.message);
+          res.status(500).json({ error: err.message });
+    }
 });
 
 app.get('/debug-result', async function(req, res) {
@@ -209,6 +223,20 @@ app.get('/find-country', async function(req, res) {
           if (!Array.isArray(countries)) countries = [countries];
           if (name) countries = countries.filter(function(c) { return c.name && c.name.toLowerCase().indexOf(name) >= 0; });
           res.json(countries.slice(0, 30));
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Debug: see raw Tourvisor response for any listdev endpoint
+app.get('/debug-raw', async function(req, res) {
+    try {
+          var type = req.query.type || 'allcountry';
+          var params = new URLSearchParams({ format: 'json', authlogin: LOGIN, authpass: PASS, type: type });
+          var dep = req.query.departure;
+          if (dep) params.set('departure', dep);
+          var r = await fetch(BASE + '/listdev.php?' + params);
+          var buf = await r.arrayBuffer();
+          var text = new TextDecoder('utf-8').decode(buf);
+          res.json({ status: r.status, length: buf.byteLength, preview: text.substring(0, 500) });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
