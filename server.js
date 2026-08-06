@@ -90,7 +90,7 @@ async function fetchTourvisorJSON(url) {
 }
 
 async function waitForSearch(requestId, maxWait) {
-    maxWait = maxWait || 55000;
+    maxWait = maxWait || 25000;
     const start = Date.now();
     while (Date.now() - start < maxWait) {
         var url = BASE + '/result.php?format=json&authlogin=' + LOGIN + '&authpass=' + PASS + '&requestid=' + requestId + '&type=status';
