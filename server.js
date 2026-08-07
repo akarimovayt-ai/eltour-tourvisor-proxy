@@ -416,7 +416,7 @@ app.get('/regions', async function(req, res) {
         }
         res.json({ regions: regions });
     } catch (err) {
-        if (String(req.query.countryId) === '4') return res.json({ regions: STATIC_REGIONS_TURKEY, static: true });
+        if (String(countryId) === '4') return res.json({ regions: STATIC_REGIONS_TURKEY, static: true });
         res.status(500).json({ error: err.message });
     }
 });
