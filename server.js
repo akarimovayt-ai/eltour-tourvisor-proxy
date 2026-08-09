@@ -151,8 +151,7 @@ function groupByHotel(hotels) {
 
         hotelMap[name] = {
             hotel: name,
-            stars: hotel.hotelstars || '',
-            resort: hotel.regionname || hotel.subregionname || '',
+stars, stars            resort: hotel.regionname || hotel.subregionname || '',
             hotelId: hotel.hotelcode || hotel.id || '',
             dateFrom: bestTour.flydate || '',
             nights: bestTour.nights || '',
@@ -203,6 +202,7 @@ app.post('/search', async function(req, res) {
         }
         if (regions) params.set('regions', regions);
         if (stars)   params.set('stars', stars);
+        params.set('hideregular', 1);
 
         var startData = await fetchTourvisorJSON(BASE + '/search.php?' + params);
         var requestId = (startData.result && startData.result.requestid)
