@@ -151,7 +151,8 @@ function groupByHotel(hotels) {
 
         hotelMap[name] = {
             hotel: name,
-stars, stars            resort: hotel.regionname || hotel.subregionname || '',
+stars: hotel.hotelstars || '',
+                        resort: hotel.regionname || hotel.subregionname || '',
             hotelId: hotel.hotelcode || hotel.id || '',
             dateFrom: bestTour.flydate || '',
             nights: bestTour.nights || '',
