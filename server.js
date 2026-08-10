@@ -181,7 +181,7 @@ app.post('/search', async function(req, res) {
         var stars     = body.stars;      // "3", "4", "5" или "4,5" — фильтр по звёздам
         var resort    = body.resort;     // текстовый фильтр по курорту (клиентский)
         var regions   = body.regions;    // ID регионов Tourvisor через запятую (точный)
-        var maxResults = parseInt(body.maxResults) || 20; // сколько отелей вернуть
+        var maxResults = parseInt(body.maxResults) || 100; // сколько отелей вернуть
 
         if (!country || !departure || !dateFrom) {
             return res.status(400).json({ error: 'Нужны: country, departure, dateFrom' });
