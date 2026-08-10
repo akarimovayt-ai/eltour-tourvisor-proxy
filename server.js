@@ -201,7 +201,7 @@ app.post('/search', async function(req, res) {
             params.set('child', children.length);
             children.forEach(function(age, i) { params.set('childage' + (i + 1), age); });
         }
-        if (regions) params.set('regions', regions);
+        if (regions && country != 4) params.set('regions', regions);
         if (stars)   params.set('stars', stars);
     
         var startData = await fetchTourvisorJSON(BASE + '/search.php?' + params);
