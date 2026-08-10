@@ -217,7 +217,7 @@ app.post('/search', async function(req, res) {
 
         // Запрашиваем 100 результатов — чтобы охватить и бюджетные и премиум отели
         var resultUrl = BASE + '/result.php?format=json&authlogin=' + LOGIN + '&authpass=' + PASS
-                      + '&requestid=' + requestId + '&type=result&onpage=100';
+                      + '&requestid=' + requestId + '&type=result&onpage=500';
         var resultData = await fetchTourvisorJSON(resultUrl);
 
         var rd = (resultData.data && resultData.data.result) || resultData.result || {};
