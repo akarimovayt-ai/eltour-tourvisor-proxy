@@ -229,9 +229,11 @@ app.post('/search', async function(req, res) {
 
         // Фильтр по бюджету (если передан)
         if (budget) grouped = grouped.filter(function(h) { return h.price <= budget; });
-
+        // Если GPT передал regions для Турции — конвертируем в resort
+                var TR = {'1009':'Кемер','1010':'Анталья','1011':'Белек','1014':'Сиде','1015':'Аланья','1016':'Мармарис','1017':'Бодрум','1018':'Фетхие','1020':'Стамбул','1021':'Кушадасы'};
+                if (country == 4 && regions && !resort) { resort = TR[String(regions)] || null; }
         // Фильтр по курорту (текстовый, если regions не передан)
-        if (resort && !regions) {
+                if (resort) {
             var resortLower = resort.toLowerCase();
             var filtered = grouped.filter(function(h) {
                 return h.resort && h.resort.toLowerCase().indexOf(resortLower) >= 0;
@@ -243,7 +245,7 @@ app.post('/search', async function(req, res) {
                     requestId: requestId,
                     found: 0,
                     tours: [],
-                    warning: 'По курорту "' + resort + '" ничего не найдено. Попробуйте regions вместо resort.'
+                                warning: 'По курорту "' + resort + '" ничего не найдено на эти даты. Попробуйте другие даты или расширьте диапазон.'
                 });
             }
         }
