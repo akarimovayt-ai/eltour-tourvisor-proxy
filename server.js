@@ -154,6 +154,7 @@ function groupByHotel(hotels) {
 stars: hotel.hotelstars || '',
                         resort: hotel.regionname || hotel.subregionname || '',
             hotelId: hotel.hotelcode || hotel.id || '',
+            link: hotel.hotelcode ? 'https://tourvisor.ru/hotel/?hotelcode=' + hotel.hotelcode : '',
             dateFrom: bestTour.flydate || '',
             nights: bestTour.nights || '',
             meal: bestTour.mealrussian || bestTour.meal || '',
@@ -241,14 +242,8 @@ app.post('/search', async function(req, res) {
             if (filtered.length > 0) {
                 grouped = filtered;
             } else {
-                return res.json({
-                    requestId: requestId,
-                    found: 0,
-                    tours: [],
-                                warning: 'По курорту "' + resort + '" ничего не найдено на эти даты. Попробуйте другие даты или расширьте диапазон.'
-                });
+                console.log('Resort filter gave 0, returning all');
             }
-        }
 
         // Сортируем по цене — от дешёвых к дорогим
         grouped.sort(function(a, b) { return a.price - b.price; });
