@@ -246,6 +246,7 @@ app.post('/search', async function(req, res) {
             }
 
         // Сортируем по цене — от дешёвых к дорогим
+}
         grouped.sort(function(a, b) { return a.price - b.price; });
 
         // Возвращаем до maxResults отелей (по умолчанию 20)
