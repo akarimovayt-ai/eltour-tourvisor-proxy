@@ -1,4 +1,4 @@
-// Eltour Tourvisor Proxy v10 - full results, hotel grouping, all KZ cities
+// Eltour Tourvisor Proxy v13 - resort→regionID mapping for reliable Turkey filtering
 const express = require('express');
 const app = express();
 app.use(express.json());
@@ -8,7 +8,7 @@ const PASS = process.env.TOURVISOR_PASS;
 const BASE = 'https://tourvisor.ru/xml';
 const RUB_TO_KZT = 5.5;
 
-// Реальные Tourvisor ID стран (верифицированы через API listdev)
+// Реальные Tourvisor ID стран
 var STATIC_COUNTRIES = [
     { id: '3',   name: 'Египет' },
     { id: '4',   name: 'Турция' },
@@ -36,7 +36,7 @@ var STATIC_COUNTRIES = [
     { id: '122', name: 'Шри-Ланка' }
 ];
 
-// Все города вылета из Казахстана
+// Города вылета из Казахстана
 var STATIC_DEPARTURES = [
     { id: '58',  name: 'Алматы' },
     { id: '59',  name: 'Астана' },
@@ -55,7 +55,7 @@ var STATIC_DEPARTURES = [
     { id: '390', name: 'Туркестан' }
 ];
 
-// Регионы Турции (статический fallback)
+// Регионы Турции
 var STATIC_REGIONS_TURKEY = [
     { id: '1009', name: 'Кемер' },
     { id: '1010', name: 'Анталья' },
@@ -69,8 +69,49 @@ var STATIC_REGIONS_TURKEY = [
     { id: '1021', name: 'Кушадасы' }
 ];
 
+// Маппинг название курорта → Tourvisor region ID (для Турции)
+// Принимает любое написание: кирилл/латин, любой регистр
+var TR_RESORT_TO_ID = {
+    // Белек
+    'белек': '1011', 'belek': '1011',
+    // Кемер
+    'кемер': '1009', 'kemer': '1009',
+    // Анталья
+    'анталья': '1010', 'antalya': '1010', 'анталия': '1010',
+    // Сиде
+    'сиде': '1014', 'side': '1014',
+    // Аланья
+    'аланья': '1015', 'alanya': '1015',
+    // Мармарис
+    'мармарис': '1016', 'marmaris': '1016',
+    // Бодрум
+    'бодрум': '1017', 'bodrum': '1017',
+    // Фетхие
+    'фетхие': '1018', 'fethiye': '1018',
+    // Стамбул
+    'стамбул': '1020', 'istanbul': '1020', 'стамбуль': '1020',
+    // Кушадасы
+    'кушадасы': '1021', 'kusadasi': '1021', 'кушадасы': '1021',
+    // Кириш (часть Кемера)
+    'кириш': '1009', 'kiriş': '1009', 'kiris': '1009'
+};
+
+// ID → название (для обратного поиска)
+var TR_ID_TO_NAME = {
+    '1009': 'Кемер', '1010': 'Анталья', '1011': 'Белек',
+    '1014': 'Сиде', '1015': 'Аланья', '1016': 'Мармарис',
+    '1017': 'Бодрум', '1018': 'Фетхие', '1020': 'Стамбул', '1021': 'Кушадасы'
+};
+
 async function fetchTourvisorJSON(url) {
-    var r = await fetch(url);
+    var controller = new AbortController();
+    var timer = setTimeout(function() { controller.abort(); }, 10000);
+    var r;
+    try {
+        r = await fetch(url, { signal: controller.signal });
+    } finally {
+        clearTimeout(timer);
+    }
     var buf = await r.arrayBuffer();
     var text = '';
     try {
@@ -83,7 +124,7 @@ async function fetchTourvisorJSON(url) {
             if (!text2 || !text2.trim()) throw new Error('Empty response from Tourvisor');
             return JSON.parse(text2);
         } catch(e2) {
-            console.error('fetchTourvisorJSON error for', url.split('?')[0], '| preview:', (text || '').substring(0, 200));
+            console.error('fetchTourvisorJSON error:', url.split('?')[0], (text || '').substring(0, 200));
             throw e2;
         }
     }
@@ -93,7 +134,8 @@ async function waitForSearch(requestId, maxWait) {
     maxWait = maxWait || 25000;
     const start = Date.now();
     while (Date.now() - start < maxWait) {
-        var url = BASE + '/result.php?format=json&authlogin=' + LOGIN + '&authpass=' + PASS + '&requestid=' + requestId + '&type=status';
+        var url = BASE + '/result.php?format=json&authlogin=' + LOGIN + '&authpass=' + PASS
+                + '&requestid=' + requestId + '&type=status';
         var data = await fetchTourvisorJSON(url);
         var status = (data && data.data && data.data.status) || {};
         var pct = (status.progress != null) ? status.progress
@@ -104,7 +146,7 @@ async function waitForSearch(requestId, maxWait) {
         if (pct >= 100 || state === 'finished') return true;
         await new Promise(function(res) { setTimeout(res, 2000); });
     }
-    return false; // timeout — partial results OK
+    return false;
 }
 
 function toKZT(price, currency) {
@@ -133,7 +175,6 @@ function groupByHotel(hotels) {
         var toursArr = toursData.tour || [];
         if (!Array.isArray(toursArr)) toursArr = [toursArr];
 
-        // Берём самый дешёвый тур для этого отеля
         var bestTour = null;
         var bestPrice = Infinity;
         for (var j = 0; j < toursArr.length; j++) {
@@ -145,16 +186,15 @@ function groupByHotel(hotels) {
             }
         }
         if (!bestTour) continue;
-
-        // Если отель уже есть — оставляем более дешёвый вариант
         if (hotelMap[name] && hotelMap[name].price <= bestPrice) continue;
 
+        var hcode = hotel.hotelcode || hotel.id || '';
         hotelMap[name] = {
             hotel: name,
-stars: hotel.hotelstars || '',
-                        resort: hotel.regionname || hotel.subregionname || '',
-            hotelId: hotel.hotelcode || hotel.id || '',
-            link: hotel.hotelcode ? 'https://tourvisor.ru/hotel/?hotelcode=' + hotel.hotelcode : '',
+            stars: hotel.hotelstars || '',
+            resort: hotel.regionname || hotel.subregionname || '',
+            hotelId: hcode,
+            link: hcode ? 'https://tourvisor.ru/hotel/?hotelcode=' + hcode : '',
             dateFrom: bestTour.flydate || '',
             nights: bestTour.nights || '',
             meal: bestTour.mealrussian || bestTour.meal || '',
@@ -170,19 +210,19 @@ stars: hotel.hotelstars || '',
 app.post('/search', async function(req, res) {
     try {
         var body = req.body;
-        var country   = body.country;
-        var departure = body.departure;
-        var dateFrom  = body.dateFrom;
-        var dateTo    = body.dateTo;
+        var country    = body.country;
+        var departure  = body.departure;
+        var dateFrom   = body.dateFrom;
+        var dateTo     = body.dateTo;
         var nightsFrom = body.nightsFrom;
         var nightsTo   = body.nightsTo;
-        var adults    = body.adults;
-        var children  = body.children;
-        var budget    = body.budget;
-        var stars     = body.stars;      // "3", "4", "5" или "4,5" — фильтр по звёздам
-        var resort    = body.resort;     // текстовый фильтр по курорту (клиентский)
-        var regions   = body.regions;    // ID регионов Tourvisor через запятую (точный)
-        var maxResults = parseInt(body.maxResults) || 100; // сколько отелей вернуть
+        var adults     = body.adults;
+        var children   = body.children;
+        var budget     = body.budget;
+        var stars      = body.stars;
+        var resort     = body.resort;   // текст: "Белек", "Кемер" и т.д.
+        var regions    = body.regions;  // numeric ID (если GPT передаёт напрямую)
+        var maxResults = parseInt(body.maxResults) || 100;
 
         if (!country || !departure || !dateFrom) {
             return res.status(400).json({ error: 'Нужны: country, departure, dateFrom' });
@@ -202,9 +242,25 @@ app.post('/search', async function(req, res) {
             params.set('child', children.length);
             children.forEach(function(age, i) { params.set('childage' + (i + 1), age); });
         }
-        if (regions && country != 4) params.set('regions', regions);
-        if (stars)   params.set('stars', stars);
-    
+        if (stars) params.set('stars', stars);
+        // НЕ передаём hideregular — нужны все рейсы
+
+        // Для Турции: если передан resort текстом — находим Tourvisor region ID
+        var resolvedRegionId = null;
+        if (String(country) === '4' && resort) {
+            var key = resort.toLowerCase().trim();
+            resolvedRegionId = TR_RESORT_TO_ID[key] || null;
+            if (resolvedRegionId) {
+                console.log('Resort "' + resort + '" → regions=' + resolvedRegionId);
+                params.set('regions', resolvedRegionId);
+            } else {
+                console.log('Resort "' + resort + '" not in map, will use text filter only');
+            }
+        } else if (regions) {
+            // regions передан напрямую (не Турция, или старый формат)
+            params.set('regions', regions);
+        }
+
         var startData = await fetchTourvisorJSON(BASE + '/search.php?' + params);
         var requestId = (startData.result && startData.result.requestid)
                      || (startData.data && startData.data.requestid)
@@ -216,7 +272,6 @@ app.post('/search', async function(req, res) {
 
         await waitForSearch(requestId);
 
-        // Запрашиваем 100 результатов — чтобы охватить и бюджетные и премиум отели
         var resultUrl = BASE + '/result.php?format=json&authlogin=' + LOGIN + '&authpass=' + PASS
                       + '&requestid=' + requestId + '&type=result&onpage=100';
         var resultData = await fetchTourvisorJSON(resultUrl);
@@ -225,31 +280,56 @@ app.post('/search', async function(req, res) {
         var hotels = rd.hotel || [];
         if (!Array.isArray(hotels)) hotels = hotels ? [hotels] : [];
 
-        // Группируем: один лучший тур на отель
         var grouped = groupByHotel(hotels);
 
-        // Фильтр по бюджету (если передан)
+        // Фильтр по бюджету
         if (budget) grouped = grouped.filter(function(h) { return h.price <= budget; });
-        // Если GPT передал regions для Турции — конвертируем в resort
-                var TR = {'1009':'Кемер','1010':'Анталья','1011':'Белек','1014':'Сиде','1015':'Аланья','1016':'Мармарис','1017':'Бодрум','1018':'Фетхие','1020':'Стамбул','1021':'Кушадасы'};
-                if (country == 4 && regions && !resort) { resort = TR[String(regions)] || null; }
-        // Фильтр по курорту (текстовый, если regions не передан)
-                if (resort) {
+
+        // Текстовый фильтр по курорту — дополнительная проверка
+        // Работает как подстраховка если API вернул лишние отели
+        if (resort) {
             var resortLower = resort.toLowerCase();
+            // Список вариантов названия курорта (кирилл + латин)
+            var resortVariants = [resortLower];
+            // Добавляем латинский вариант если было кириллическое
+            var latinMap = {
+                'белек': 'belek', 'кемер': 'kemer', 'анталья': 'antalya', 'анталия': 'antalya',
+                'сиде': 'side', 'аланья': 'alanya', 'мармарис': 'marmaris',
+                'бодрум': 'bodrum', 'фетхие': 'fethiye', 'стамбул': 'istanbul',
+                'кушадасы': 'kusadasi', 'кириш': 'kiris'
+            };
+            var cyrMap = {
+                'belek': 'белек', 'kemer': 'кемер', 'antalya': 'анталья',
+                'side': 'сиде', 'alanya': 'аланья', 'marmaris': 'мармарис',
+                'bodrum': 'бодрум', 'fethiye': 'фетхие', 'istanbul': 'стамбул',
+                'kusadasi': 'кушадасы', 'kiris': 'кириш'
+            };
+            if (latinMap[resortLower]) resortVariants.push(latinMap[resortLower]);
+            if (cyrMap[resortLower]) resortVariants.push(cyrMap[resortLower]);
+
             var filtered = grouped.filter(function(h) {
-                return h.resort && h.resort.toLowerCase().indexOf(resortLower) >= 0;
+                if (!h.resort) return false;
+                var rl = h.resort.toLowerCase();
+                return resortVariants.some(function(v) { return rl.indexOf(v) >= 0; });
             });
+
             if (filtered.length > 0) {
+                console.log('Resort text filter "' + resort + '": ' + grouped.length + ' → ' + filtered.length);
                 grouped = filtered;
             } else {
-                console.log('Resort filter gave 0, returning all');
+                // Если API уже отфильтровал по regionID — результаты верные, text filter может не совпасть
+                // В таком случае возвращаем всё что пришло (API уже сделал фильтрацию)
+                if (resolvedRegionId) {
+                    console.log('Text filter gave 0 but API filtered by regionId ' + resolvedRegionId + ' — returning all API results');
+                } else {
+                    console.log('Resort text filter "' + resort + '" gave 0, returning all ' + grouped.length);
+                }
             }
+        }
 
-        // Сортируем по цене — от дешёвых к дорогим
-}
+        // Сортируем по цене
         grouped.sort(function(a, b) { return a.price - b.price; });
 
-        // Возвращаем до maxResults отелей (по умолчанию 20)
         var result = grouped.slice(0, maxResults);
 
         res.json({
@@ -260,19 +340,20 @@ app.post('/search', async function(req, res) {
         });
 
     } catch (err) {
+        console.error('/search error:', err.message);
         res.status(500).json({ error: err.message });
     }
 });
 
-// Эндпоинт для поиска лучшей цены по конкретному отелю
+// Поиск по конкретному отелю
 app.post('/search-hotel', async function(req, res) {
     try {
         var body = req.body;
         var country   = body.country;
         var departure = body.departure;
         var dateFrom  = body.dateFrom;
-        var hotelId   = body.hotelId;   // ID отеля в Tourvisor
-        var hotelName = body.hotelName; // или имя для поиска
+        var hotelId   = body.hotelId;
+        var hotelName = body.hotelName;
 
         if (!country || !departure || !dateFrom) {
             return res.status(400).json({ error: 'Нужны: country, departure, dateFrom' });
@@ -306,7 +387,6 @@ app.post('/search-hotel', async function(req, res) {
 
         var grouped = groupByHotel(hotels);
 
-        // Фильтр по имени отеля если hotelId не дал результата
         if (hotelName && grouped.length > 1) {
             var nameLower = hotelName.toLowerCase();
             var filtered = grouped.filter(function(h) {
@@ -413,7 +493,9 @@ app.get('/regions', async function(req, res) {
         }
         res.json({ regions: regions });
     } catch (err) {
-        if (String(countryId) === '4') return res.json({ regions: STATIC_REGIONS_TURKEY, static: true });
+        if (String(req.query.countryId || req.query.country) === '4') {
+            return res.json({ regions: STATIC_REGIONS_TURKEY, static: true });
+        }
         res.status(500).json({ error: err.message });
     }
 });
@@ -423,7 +505,8 @@ app.get('/debug-result', async function(req, res) {
     try {
         var rid = req.query.requestId;
         if (!rid) return res.status(400).json({ error: 'Нужен ?requestId=...' });
-        var url = BASE + '/result.php?format=json&authlogin=' + LOGIN + '&authpass=' + PASS + '&requestid=' + rid + '&type=result&onpage=5';
+        var url = BASE + '/result.php?format=json&authlogin=' + LOGIN + '&authpass=' + PASS
+                + '&requestid=' + rid + '&type=result&onpage=5';
         var data = await fetchTourvisorJSON(url);
         res.json(data);
     } catch (err) { res.status(500).json({ error: err.message }); }
@@ -448,7 +531,8 @@ app.get('/debug-status', async function(req, res) {
     try {
         var rid = req.query.requestId;
         if (!rid) return res.status(400).json({ error: 'Нужен ?requestId=...' });
-        var url = BASE + '/result.php?format=json&authlogin=' + LOGIN + '&authpass=' + PASS + '&requestid=' + rid + '&type=status';
+        var url = BASE + '/result.php?format=json&authlogin=' + LOGIN + '&authpass=' + PASS
+                + '&requestid=' + rid + '&type=status';
         var data = await fetchTourvisorJSON(url);
         res.json(data);
     } catch (err) { res.status(500).json({ error: err.message }); }
@@ -468,8 +552,8 @@ app.get('/debug-raw', async function(req, res) {
 });
 
 app.get('/', function(req, res) {
-    res.json({ status: 'ok', service: 'Eltour Tourvisor Proxy v10 - hotel grouping, 20 results, all KZ cities' });
+    res.json({ status: 'ok', service: 'Eltour Tourvisor Proxy v13 - resort→regionID mapping, hotel links' });
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, function() { console.log('Proxy v10 запущен на порту ' + PORT); });
+app.listen(PORT, function() { console.log('Proxy v13 запущен на порту ' + PORT); });
