@@ -1,4 +1,4 @@
-// Eltour Tourvisor Proxy v14 - dynamic region lookup, resort→regionID fix
+// Eltour Tourvisor Proxy v15 - client-side resort filter, no region API call
 const express = require('express');
 const app = express();
 app.use(express.json());
@@ -7,12 +7,11 @@ const LOGIN = process.env.TOURVISOR_LOGIN;
 const PASS = process.env.TOURVISOR_PASS;
 const BASE = 'https://tourvisor.ru/xml';
 
-// Кеш регионов (countryId → [{id, name}])
-var regionsCache = {};
-
+// Читаем ответ Tourvisor (может быть windows-1251 или UTF-8)
 async function fetchTourvisorJSON(url) {
   var r = await fetch(url);
   var buf = await r.arrayBuffer();
+  if (buf.byteLength === 0) throw new Error('Tourvisor вернул пустой ответ (возможно неверные учётные данные или неверный параметр)');
   try {
     var text = new TextDecoder('utf-8').decode(buf);
     return JSON.parse(text);
@@ -22,33 +21,7 @@ async function fetchTourvisorJSON(url) {
   }
 }
 
-async function fetchRegions(countryId, departureId) {
-  var key = countryId + '_' + (departureId || '');
-  if (regionsCache[key]) return regionsCache[key];
-  var params = new URLSearchParams({
-    format: 'json', authlogin: LOGIN, authpass: PASS,
-    type: 'region', country: countryId
-  });
-  if (departureId) params.set('departure', departureId);
-  var data = await fetchTourvisorJSON(BASE + '/listdev.php?' + params);
-  var regions = (data && data.data && data.data.regions && data.data.regions.region)
-    || (data && data.regions && data.regions.region) || [];
-  if (!Array.isArray(regions)) regions = regions ? [regions] : [];
-  regionsCache[key] = regions;
-  return regions;
-}
-
-async function resolveResortId(resortName, countryId, departureId) {
-  if (!resortName) return null;
-  if (/^\d+$/.test(String(resortName))) return String(resortName);
-  var regions = await fetchRegions(countryId, departureId);
-  var name = resortName.toLowerCase().trim();
-  var found = regions.find(function(r) {
-    return r.name && r.name.toLowerCase().indexOf(name) >= 0;
-  });
-  return found ? String(found.id) : null;
-}
-
+// Polling статуса поиска
 async function waitForSearch(requestId, maxWait) {
   maxWait = maxWait || 45000;
   var start = Date.now();
@@ -56,6 +29,7 @@ async function waitForSearch(requestId, maxWait) {
     var url = BASE + '/result.php?format=json&authlogin=' + LOGIN + '&authpass=' + PASS + '&requestid=' + requestId + '&type=status';
     var data = await fetchTourvisorJSON(url);
     var pct = (data && data.data && data.data.percentage != null) ? data.data.percentage
+      : (data && data.data && data.data.status && data.data.status.progress != null) ? data.data.status.progress
       : (data && data.result && data.result.percentage != null) ? data.result.percentage
       : (data && data.percentage != null) ? data.percentage : 0;
     if (pct >= 100) return true;
@@ -64,6 +38,7 @@ async function waitForSearch(requestId, maxWait) {
   return false;
 }
 
+// ───────── Основной поиск туров ─────────
 app.post('/search', async function(req, res) {
   try {
     var body = req.body;
@@ -77,15 +52,10 @@ app.post('/search', async function(req, res) {
     var children = body.children;
     var stars = body.stars;
     var budget = body.budget;
-    var resortRaw = body.resort || body.region || '';
+    var resortRaw = (body.resort || body.region || '').toString().trim();
 
     if (!country || !departure || !dateFrom) {
       return res.status(400).json({ error: 'Нужны: country, departure, dateFrom' });
-    }
-
-    var resolvedRegionId = null;
-    if (resortRaw) {
-      resolvedRegionId = await resolveResortId(String(resortRaw), country, departure);
     }
 
     var params = new URLSearchParams({
@@ -96,12 +66,17 @@ app.post('/search', async function(req, res) {
       adults: adults || 2, currency: 'kzt'
     });
 
-    if (resolvedRegionId) params.set('region', resolvedRegionId);
+    if (resortRaw && /^\d+$/.test(resortRaw)) {
+      params.set('region', resortRaw);
+    }
+
     if (stars) params.set('stars', stars);
     if (children && children.length > 0) {
       params.set('child', children.length);
       children.forEach(function(age, i) { params.set('childage' + (i+1), age); });
     }
+
+    var onpage = (resortRaw && !/^\d+$/.test(resortRaw)) ? 100 : 30;
 
     var startData = await fetchTourvisorJSON(BASE + '/search.php?' + params);
     var requestId = (startData.data && startData.data.requestid)
@@ -115,10 +90,11 @@ app.post('/search', async function(req, res) {
     await waitForSearch(requestId);
 
     var resultUrl = BASE + '/result.php?format=json&authlogin=' + LOGIN + '&authpass=' + PASS
-      + '&requestid=' + requestId + '&type=result&onpage=20';
+      + '&requestid=' + requestId + '&type=result&onpage=' + onpage;
     var resultData = await fetchTourvisorJSON(resultUrl);
 
-    var rd = (resultData.data && resultData.data.result) || resultData.result || {};
+    var rd = (resultData.data && resultData.data.result)
+      || resultData.result || {};
     var hotels = rd.hotel || [];
     if (!Array.isArray(hotels)) hotels = [hotels];
 
@@ -126,8 +102,7 @@ app.post('/search', async function(req, res) {
     for (var i = 0; i < hotels.length; i++) {
       var hotel = hotels[i];
       var variants = hotel.tourvariant || hotel.tours || [];
-      var toursArr = Array.isArray(variants) ? variants
-        : (variants.tour ? (Array.isArray(variants.tour) ? variants.tour : [variants.tour]) : [variants]);
+      var toursArr = Array.isArray(variants) ? variants : (variants.tour ? (Array.isArray(variants.tour) ? variants.tour : [variants.tour]) : [variants]);
       for (var j = 0; j < toursArr.length; j++) {
         var t = toursArr[j];
         tours.push({
@@ -147,6 +122,15 @@ app.post('/search', async function(req, res) {
       }
     }
 
+    var resortFilter = '';
+    if (resortRaw && !/^\d+$/.test(resortRaw)) {
+      resortFilter = resortRaw.toLowerCase();
+      var filtered = tours.filter(function(t) {
+        return t.resort && t.resort.toLowerCase().indexOf(resortFilter) >= 0;
+      });
+      if (filtered.length > 0) tours = filtered;
+    }
+
     if (budget) tours = tours.filter(function(t) { return t.price <= budget; });
     var top = tours.sort(function(a, b) { return a.price - b.price; }).slice(0, 10);
 
@@ -154,7 +138,7 @@ app.post('/search', async function(req, res) {
       requestId: requestId,
       found: top.length,
       totalHotelsFound: hotels.length,
-      resolvedRegionId: resolvedRegionId,
+      resortFilterApplied: resortFilter || null,
       tours: top
     });
   } catch (err) {
@@ -186,16 +170,6 @@ app.get('/countries', async function(req, res) {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.get('/regions', async function(req, res) {
-  try {
-    var countryId = req.query.countryId;
-    var departureId = req.query.departureId;
-    if (!countryId) return res.status(400).json({ error: 'Нужен ?countryId=...' });
-    var regions = await fetchRegions(countryId, departureId);
-    res.json({ regions: regions, source: 'tourvisor-api' });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
 app.get('/find-departure', async function(req, res) {
   try {
     var name = (req.query.name || '').toLowerCase();
@@ -221,18 +195,6 @@ app.get('/find-country', async function(req, res) {
     if (!Array.isArray(countries)) countries = [countries];
     if (name) countries = countries.filter(function(c) { return c.name && c.name.toLowerCase().indexOf(name) >= 0; });
     res.json(countries.slice(0, 30));
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-app.get('/find-region', async function(req, res) {
-  try {
-    var name = (req.query.name || '').toLowerCase();
-    var countryId = req.query.countryId;
-    var departureId = req.query.departureId;
-    if (!countryId) return res.status(400).json({ error: 'Нужен ?countryId=...&name=...' });
-    var regions = await fetchRegions(countryId, departureId);
-    var filtered = name ? regions.filter(function(r) { return r.name && r.name.toLowerCase().indexOf(name) >= 0; }) : regions;
-    res.json(filtered.slice(0, 30));
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -272,15 +234,29 @@ app.get('/debug-raw', async function(req, res) {
     var url = BASE + '/listdev.php?' + params;
     var r = await fetch(url);
     var buf = await r.arrayBuffer();
-    var textUtf = '', jsonUtf = null;
+    var textUtf = '', textWin = '', jsonUtf = null;
     try { textUtf = new TextDecoder('utf-8').decode(buf); jsonUtf = JSON.parse(textUtf); } catch(e) { textUtf = e.message; }
-    res.json({ status: r.status, length: buf.byteLength, preview: textUtf.slice(0, 500), data: jsonUtf });
+    try { textWin = new TextDecoder('windows-1251').decode(buf); } catch(e) {}
+    res.json({
+      status: r.status,
+      length: buf.byteLength,
+      url: url.replace(PASS, '***').replace(LOGIN, '***'),
+      preview: (typeof textUtf === 'string' && textUtf.length > 0) ? textUtf.slice(0, 500) : textWin.slice(0, 500),
+      data: jsonUtf
+    });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.get('/', function(req, res) {
-  res.json({ status: 'ok', service: 'Eltour Tourvisor Proxy v14 - dynamic region lookup' });
+  res.json({
+    status: 'ok',
+    service: 'Eltour Tourvisor Proxy v15 – client-side resort filter',
+    env: {
+      login: LOGIN ? LOGIN.slice(0, 3) + '***' : 'NOT SET',
+      pass: PASS ? '***set***' : 'NOT SET'
+    }
+  });
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, function() { console.log('Proxy v14 на порту ' + PORT); });
+app.listen(PORT, function() { console.log('Proxy v15 запущен на порту ' + PORT); });
